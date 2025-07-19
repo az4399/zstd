@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'   # 以 v 开头的 Tag 触发
   workflow_dispatch:  # 手动触发
+    inputs:
+      version:
+        description: 'zstd version (e.g. v1.5.7)'
+        required: false
+        default: 'v1.5.7'
 
 jobs:
   build:
@@ -19,22 +24,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools build-essential wget
 
-      - name: Download zstd source
+      - name: Determine version and download source
         id: download
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # 手动触发时用输入的版本号，默认1.5.7
-            VERSION="${{ github.event.inputs.version || 'v1.5.7' }}"
+            VERSION="${{ github.event.inputs.version }}"
           else
             VERSION=${GITHUB_REF#refs/tags/}
           fi
+          VERSION_NO_V=${VERSION#v}
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          wget https://github.com/facebook/zstd/releases/download/$VERSION/zstd-${VERSION#v}.tar.gz
-          tar -xzf zstd-${VERSION#v}.tar.gz
+          echo "VERSION_NO_V=$VERSION_NO_V" >> $GITHUB_ENV
+
+          echo "Downloading zstd version $VERSION_NO_V ..."
+          wget https://github.com/facebook/zstd/releases/download/$VERSION/zstd-$VERSION_NO_V.tar.gz
+          tar -xzf zstd-$VERSION_NO_V.tar.gz
 
       - name: Build static binary with musl
         run: |
-          cd zstd-${{ env.VERSION#v }}
+          cd zstd-$VERSION_NO_V
           CC=musl-gcc make clean
           CC=musl-gcc make \
             CFLAGS="-O3 -static -flto" \
@@ -45,8 +53,7 @@ jobs:
       - name: Upload static binary to Release
         uses: softprops/action-gh-release@v1
         with:
-          files: zstd-${{ env.VERSION#v }}/programs/zstd
+          files: zstd-$VERSION_NO_V/programs/zstd
           tag_name: ${{ env.VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
