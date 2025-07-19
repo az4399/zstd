@@ -43,11 +43,16 @@ jobs:
         
         # 设置编译环境变量
         export CC=musl-gcc
-        export CFLAGS="-static -Os -ffunction-sections -fdata-sections"
+        export CFLAGS="-static -Os -ffunction-sections -fdata-sections -DZSTD_MULTITHREAD=0"
         export LDFLAGS="-static -Wl,--gc-sections -Wl,--strip-all"
         
-        # 编译 zstd
-        make -j$(nproc) CC=musl-gcc CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+        # 首先编译静态库
+        echo "==> Building static library..."
+        make -C lib libzstd.a CC=musl-gcc CFLAGS="$CFLAGS"
+        
+        # 然后只编译程序，避免动态库编译
+        echo "==> Building zstd program..."
+        make -C programs zstd CC=musl-gcc CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" ZSTD_LIB_COMPRESSION=1 ZSTD_LIB_DECOMPRESSION=1 ZSTD_LIB_DICTBUILDER=1 ZSTD_LEGACY_SUPPORT=0
         
         # 验证编译结果
         ls -la programs/zstd*
@@ -57,16 +62,19 @@ jobs:
         # 创建发布目录
         mkdir -p ../release
         
-        # 复制二进制文件和相关文件
+        # 复制二进制文件
         cp programs/zstd ../release/zstd
-        cp programs/zstdcat ../release/zstdcat || echo "zstdcat not found"
-        cp programs/unzstd ../release/unzstd || echo "unzstd not found"
-        cp programs/zstdmt ../release/zstdmt || echo "zstdmt not found"
+        
+        # 创建符号链接程序（zstdcat 和 unzstd 通常是 zstd 的符号链接）
+        cd ../release
+        ln -sf zstd zstdcat
+        ln -sf zstd unzstd
+        ln -sf zstd zstdmt
         
         # 复制文档文件
-        cp README.md ../release/
-        cp LICENSE ../release/
-        cp CHANGELOG ../release/ || echo "CHANGELOG not found"
+        cp ../zstd-source/README.md .
+        cp ../zstd-source/LICENSE .
+        cp ../zstd-source/CHANGELOG . || echo "CHANGELOG not found"
     
     - name: Test compiled binary
       run: |
