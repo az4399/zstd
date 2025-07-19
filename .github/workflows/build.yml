@@ -1,0 +1,42 @@
+name: Build and Release zstd (musl static)
+
+on:
+  push:
+    tags:
+      - 'v*'   # 只有打 Tag 才触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Install musl tools and dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools build-essential wget
+
+    - name: Download zstd source
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        wget https://github.com/facebook/zstd/releases/download/${VERSION}/zstd-${VERSION#v}.tar.gz
+        tar -xzf zstd-${VERSION#v}.tar.gz
+
+    - name: Build static binary with musl
+      run: |
+        cd zstd-${VERSION#v}
+        CC=musl-gcc make clean
+        CC=musl-gcc make \
+          CFLAGS="-O3 -static -flto" \
+          LDFLAGS="-static -flto" \
+          programs-only
+        ls -lh programs/zstd
+
+    - name: Upload static binary to Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: zstd-${VERSION#v}/programs/zstd
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
