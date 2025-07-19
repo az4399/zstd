@@ -2,11 +2,8 @@ name: Build and Release zstd
 
 on:
   workflow_dispatch:  # 手动触发
-    inputs:
-      release_tag:
-        description: 'Release tag (e.g., v1.0.0)'
-        required: true
-        default: 'v1.5.7'
+  schedule:
+    - cron: '0 2 * * 1'  # 每周一凌晨2点自动检查更新（可选）
 
 permissions:
   contents: write  # 需要写权限来创建 release
@@ -31,8 +28,25 @@ jobs:
         LATEST_VERSION=$(curl -s https://api.github.com/repos/facebook/zstd/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
         echo "Latest zstd version: $LATEST_VERSION"
         echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+        
+        # 生成基于版本的 release tag
+        RELEASE_TAG="zstd-${LATEST_VERSION#v}-$(date +%Y%m%d)"
+        echo "Generated release tag: $RELEASE_TAG"
+        echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+        
+        # 检查是否已经存在相同版本的 release
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Release $RELEASE_TAG already exists, skipping build"
+          echo "skip_build=true" >> $GITHUB_OUTPUT
+        else
+          echo "New version detected, proceeding with build"
+          echo "skip_build=false" >> $GITHUB_OUTPUT
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Download and extract zstd source
+      if: steps.get_version.outputs.skip_build != 'true'
       run: |
         VERSION="${{ steps.get_version.outputs.version }}"
         echo "Downloading zstd $VERSION"
@@ -41,6 +55,7 @@ jobs:
         mv zstd-${VERSION#v} zstd-source
     
     - name: Compile zstd with musl
+      if: steps.get_version.outputs.skip_build != 'true'
       run: |
         cd zstd-source
         
@@ -80,6 +95,7 @@ jobs:
         cp ../zstd-source/CHANGELOG . || echo "CHANGELOG not found"
     
     - name: Test compiled binary
+      if: steps.get_version.outputs.skip_build != 'true'
       run: |
         cd release
         echo "Testing zstd binary..."
@@ -100,6 +116,7 @@ jobs:
         fi
     
     - name: Create release archive
+      if: steps.get_version.outputs.skip_build != 'true'
       run: |
         cd release
         VERSION="${{ steps.get_version.outputs.version }}"
@@ -116,9 +133,10 @@ jobs:
     
     - name: Create Release
       id: create_release
+      if: steps.get_version.outputs.skip_build != 'true'
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: ${{ github.event.inputs.release_tag }}
+        tag_name: ${{ steps.get_version.outputs.release_tag }}
         name: "zstd ${{ steps.get_version.outputs.version }} for QNAP NAS"
         draft: false
         prerelease: false
@@ -130,12 +148,16 @@ jobs:
           
           This is a statically compiled version of zstd using musl libc, optimized for QNAP NAS systems.
           
+          **Auto-built on:** $(date)
+          **zstd Source Version:** ${{ steps.get_version.outputs.version }}
+          
           **Features:**
           - ✅ Static binary (no dependencies required)
           - ✅ Compiled with musl-gcc for maximum compatibility
           - ✅ x86_64 architecture
           - ✅ Optimized for size (-Os)
           - ✅ Tested compression/decompression functionality
+          - ✅ Automatically built from latest zstd release
           
           **Installation on QNAP:**
           1. Download the `${{ env.archive_name }}.tar.gz` file
@@ -153,3 +175,16 @@ jobs:
           **Source:** Facebook zstd ${{ steps.get_version.outputs.version }}
           **Build:** Static musl build
           **Architecture:** x86_64
+    
+    - name: Build Summary
+      run: |
+        if [ "${{ steps.get_version.outputs.skip_build }}" = "true" ]; then
+          echo "## Build Skipped ⏭️" >> $GITHUB_STEP_SUMMARY
+          echo "Release for zstd ${{ steps.get_version.outputs.version }} already exists." >> $GITHUB_STEP_SUMMARY
+          echo "Release tag: ${{ steps.get_version.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## Build Completed ✅" >> $GITHUB_STEP_SUMMARY
+          echo "Successfully built and released zstd ${{ steps.get_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "Release tag: ${{ steps.get_version.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "Archive: ${{ env.archive_name }}.tar.gz" >> $GITHUB_STEP_SUMMARY
+        fi
