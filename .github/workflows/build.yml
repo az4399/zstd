@@ -3,8 +3,8 @@ name: Build and Release zstd (musl static)
 on:
   push:
     tags:
-      - 'v*'   # 以 v 开头的 Tag 触发
-  workflow_dispatch:  # 手动触发
+      - 'v*'
+  workflow_dispatch:
     inputs:
       version:
         description: 'zstd version (e.g. v1.5.7)'
@@ -44,10 +44,7 @@ jobs:
         run: |
           cd zstd-$VERSION_NO_V
           CC=musl-gcc make clean
-          CC=musl-gcc make \
-            CFLAGS="-O3 -static -flto" \
-            LDFLAGS="-static -flto" \
-            programs-only
+          CC=musl-gcc CFLAGS="-O3 -static -flto" LDFLAGS="-static -flto" make programs
           ls -lh programs/zstd
 
       - name: Upload static binary to Release
