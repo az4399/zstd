@@ -1,56 +1,162 @@
-name: Build and Release zstd (musl static)
+name: Build and Release zstd
 
 on:
-  push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
+  workflow_dispatch:  # 手动触发
     inputs:
-      version:
-        description: 'zstd version (e.g. v1.5.7)'
-        required: false
-        default: 'v1.5.7'
+      release_tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
-
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Install musl tools and dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools build-essential wget
-
-      - name: Determine version and download source
-        id: download
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION=${GITHUB_REF#refs/tags/}
-          fi
-          VERSION_NO_V=${VERSION#v}
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "VERSION_NO_V=$VERSION_NO_V" >> $GITHUB_ENV
-
-          echo "Downloading zstd version $VERSION_NO_V ..."
-          wget https://github.com/facebook/zstd/releases/download/$VERSION/zstd-$VERSION_NO_V.tar.gz
-          tar -xzf zstd-$VERSION_NO_V.tar.gz
-
-      - name: Build static binary with musl
-        run: |
-          cd zstd-$VERSION_NO_V
-          CC=musl-gcc make clean
-          CC=musl-gcc CFLAGS="-O3 -static -flto" LDFLAGS="-static -flto" make programs
-          ls -lh programs/zstd
-
-      - name: Upload static binary to Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: zstd-$VERSION_NO_V/programs/zstd
-          tag_name: ${{ env.VERSION }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Install musl-gcc
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools musl-dev
+    
+    - name: Get latest zstd version
+      id: get_version
+      run: |
+        # 获取 zstd 最新版本
+        LATEST_VERSION=$(curl -s https://api.github.com/repos/facebook/zstd/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+        echo "Latest zstd version: $LATEST_VERSION"
+        echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Download and extract zstd source
+      run: |
+        VERSION="${{ steps.get_version.outputs.version }}"
+        echo "Downloading zstd $VERSION"
+        wget https://github.com/facebook/zstd/releases/download/$VERSION/zstd-${VERSION#v}.tar.gz
+        tar -xzf zstd-${VERSION#v}.tar.gz
+        mv zstd-${VERSION#v} zstd-source
+    
+    - name: Compile zstd with musl
+      run: |
+        cd zstd-source
+        
+        # 设置编译环境变量
+        export CC=musl-gcc
+        export CFLAGS="-static -Os -ffunction-sections -fdata-sections"
+        export LDFLAGS="-static -Wl,--gc-sections -Wl,--strip-all"
+        
+        # 编译 zstd
+        make -j$(nproc) CC=musl-gcc CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+        
+        # 验证编译结果
+        ls -la programs/zstd*
+        file programs/zstd
+        ldd programs/zstd || echo "Static binary (no dynamic dependencies)"
+        
+        # 创建发布目录
+        mkdir -p ../release
+        
+        # 复制二进制文件和相关文件
+        cp programs/zstd ../release/zstd
+        cp programs/zstdcat ../release/zstdcat || echo "zstdcat not found"
+        cp programs/unzstd ../release/unzstd || echo "unzstd not found"
+        cp programs/zstdmt ../release/zstdmt || echo "zstdmt not found"
+        
+        # 复制文档文件
+        cp README.md ../release/
+        cp LICENSE ../release/
+        cp CHANGELOG ../release/ || echo "CHANGELOG not found"
+    
+    - name: Test compiled binary
+      run: |
+        cd release
+        echo "Testing zstd binary..."
+        ./zstd --version
+        
+        # 简单的压缩测试
+        echo "Hello, QNAP NAS!" > test.txt
+        ./zstd test.txt
+        ./zstd -d test.txt.zst -o test_decompressed.txt
+        cat test_decompressed.txt
+        
+        # 验证文件一致性
+        if cmp -s test.txt test_decompressed.txt; then
+            echo "✅ Compression/decompression test passed!"
+        else
+            echo "❌ Compression/decompression test failed!"
+            exit 1
+        fi
+    
+    - name: Create release archive
+      run: |
+        cd release
+        VERSION="${{ steps.get_version.outputs.version }}"
+        ARCHIVE_NAME="zstd-${VERSION#v}-linux-x86_64-musl"
+        
+        # 创建压缩包
+        tar -czf "../${ARCHIVE_NAME}.tar.gz" ./*
+        
+        # 计算校验和
+        cd ..
+        sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.sha256"
+        
+        echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_ENV
+    
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.event.inputs.release_tag }}
+        release_name: "zstd ${{ steps.get_version.outputs.version }} for QNAP NAS"
+        draft: false
+        prerelease: false
+        body: |
+          ## zstd ${{ steps.get_version.outputs.version }} - Static Build for QNAP NAS
+          
+          This is a statically compiled version of zstd using musl libc, optimized for QNAP NAS systems.
+          
+          **Features:**
+          - ✅ Static binary (no dependencies required)
+          - ✅ Compiled with musl-gcc for maximum compatibility
+          - ✅ x86_64 architecture
+          - ✅ Optimized for size (-Os)
+          - ✅ Tested compression/decompression functionality
+          
+          **Installation on QNAP:**
+          1. Download the `${{ env.archive_name }}.tar.gz` file
+          2. Extract to your desired location on QNAP NAS
+          3. Make executable: `chmod +x zstd`
+          4. Run: `./zstd --version`
+          
+          **What's included:**
+          - `zstd` - Main compression tool
+          - `zstdcat` - Decompression to stdout (if available)
+          - `unzstd` - Decompression tool (if available)
+          - Documentation files
+          
+          **Source:** Facebook zstd ${{ steps.get_version.outputs.version }}
+          **Build:** Static musl build
+          **Architecture:** x86_64
+    
+    - name: Upload Release Archive
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./${{ env.archive_name }}.tar.gz
+        asset_name: ${{ env.archive_name }}.tar.gz
+        asset_content_type: application/gzip
+    
+    - name: Upload Checksum
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./${{ env.archive_name }}.sha256
+        asset_name: ${{ env.archive_name }}.sha256
+        asset_content_type: text/plain
